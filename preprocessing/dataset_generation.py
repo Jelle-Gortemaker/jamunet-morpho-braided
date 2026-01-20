@@ -6,6 +6,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 import numpy as np
+import pandas as pd
 
 from osgeo import gdal 
 from torch.utils.data import TensorDataset 
@@ -219,8 +220,74 @@ def combine_datasets(train_val_test, reach, year_target=5, nonwater_threshold=48
                 filtered_target_dataset.append(target_tensor)
     return filtered_input_dataset, filtered_target_dataset
 
+
+
+
+
+
+
+
+def load_ci_norm_vector(
+    reach: str,
+    year: int,
+    months=(5, 6, 7, 8, 9, 10),
+    csv_path=r"preprocessing/Brahmaputra_merged_output.csv",
+    fill_value=np.nan,
+) -> np.ndarray:
+    """
+    Load CI_normalized values for a specific reach + year and return a vector for selected months.
+
+    Parameters
+    ----------
+    reach : str
+        Reach identifier exactly as in the CSV, e.g. 'r1', 'r2', ...
+    year : int
+        Year to select, e.g. 2005
+    months : tuple[int]
+        Months to include, e.g. (5,6,7,8,9,10)
+    csv_path : str
+        Path to the CI CSV
+    fill_value : float
+        Value used when a month is missing (default NaN)
+
+    Returns
+    -------
+    np.ndarray
+        Vector of shape (len(months),) with CI_normalized values in the same order as `months`.
+    """
+    df = pd.read_csv(csv_path)
+
+    # Validate expected columns
+    required_cols = {"r", "month", "CI_normalized"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(f"CSV missing columns: {sorted(missing)}. Available: {list(df.columns)}")
+
+    # Parse month column to datetime
+    df["month"] = pd.to_datetime(df["month"], errors="coerce")
+    if df["month"].isna().any():
+        bad = df[df["month"].isna()].head(5)
+        raise ValueError(f"Unparseable values in 'month'. Example rows:\n{bad}")
+
+    # Filter to reach + year
+    sub = df[(df["r"] == reach) & (df["month"].dt.year == year)].copy()
+    if sub.empty:
+        raise ValueError(f"No rows found for reach='{reach}' and year={year}.")
+
+    # Extract month number
+    sub["m"] = sub["month"].dt.month
+
+    # If multiple rows exist for the same month, average them
+    monthly = sub.groupby("m")["CI_normalized"].mean()
+
+    # Build vector in requested month order
+    vec = np.array([monthly.get(m, fill_value) for m in months], dtype=np.float32)
+    return vec
+
+
+"""
 def create_full_dataset(train_val_test, year_target=5, nonwater_threshold=480000, nodata_value=-1, nonwater_value=0, dir_folders=r'data\satellite\dataset', 
-                        collection=r'JRC_GSW1_4_MonthlyHistory', scaled_classes=True, device='cuda:0', dtype=torch.int64):
+                        collection=r'JRC_GSW1_4_MonthlyHistory', scaled_classes=True, device='cuda:0', dtype=torch.int64, ):
     '''
     Generate the full dataset for the given use, combining all reaches.
     Stack all different pairs within one use in order to have the dataset ready for the training, validation and testing of the model.
@@ -328,6 +395,108 @@ def split_list(train_val_test, reach, month, year_end_train=2009, year_end_val=2
         elif year > year_end_val:
             test_list.append(path)
     return train_list, val_list, test_list
+    """
+
+
+
+
+
+
+
+
+
+
+def parse_year_from_path(path: str) -> int:
+    m = re.search(r"(19|20)\d{2}", str(path))
+    if not m:
+        raise ValueError(f"Could not parse a 4-digit year from path: {path}")
+    return int(m.group(0))
+
+def reach_to_str(reach_id: int) -> str:
+    # adjust if your CSV uses a different reach format
+    return f"r{int(reach_id):02d}"
+
+
+def create_full_dataset(train_val_test, year_target=5, nonwater_threshold=480000, nodata_value=-1, nonwater_value=0, dir_folders=r'data\satellite\dataset', 
+                        collection=r'JRC_GSW1_4_MonthlyHistory', scaled_classes=True, device='cuda:0', dtype=torch.int64, ci_csv_path=r"Brahmaputra_CI_values.csv", ci_months = (1,2,3,4,5,6,7,8,9,10,11,12), ci_fill_value=np.nan):
+    '''
+    Generate the full dataset for the given use, combining all reaches.
+    Stack all different pairs within one use in order to have the dataset ready for the training, validation and testing of the model.
+
+    Inputs:
+           train_val_test = str, specifies what the images are used for.
+                            available options: 'training', 'validation' and 'testing'
+           year_target = int, sets the year predicted after a sequence of input years.
+                         default: 5, input dataset is made of 4 images and 5th year is the predicted one
+           nonwater_threshold = int, min amount of `non-water` pixels allowed in the inputs-target combinations
+                                default: 480000, necessary to filter out only the fully `non-water` images 
+           nodata_value = int, represents pixel value of no data class.
+                          default: -1, based on the updated pixel classes. 
+                          If `scaled_classes` = False, this should be set to 0
+           nonwater_value = int, represents pixel value of non-water class.
+                            default: 0, based on the updated pixel classes. 
+                            If `scaled_classes` = False, this should be set to 1
+           dir_folders = str, directory where folders are stored
+                         default: r'data\satellite\dataset'
+           collection = str, specifies the satellite images collection.
+                        default: r'JRC_GSW1_4_MonthlyHistory', the function is implemented to work only with this dataset
+           scaled_classes = bool, sets whether pixel classes are scaled to the range [-1, 1] or kept within the original one [0, 2]
+                            default: True, pixel classes are scaled (recommended).
+           device = str, specifies device where memory is allocated for performing the computations
+                    default: 'cuda: 0' (GPU), other availble option: 'cpu'
+           dtype = class, specifies the data type for torch.tensor method.
+                   default: torch.int64, it also accepts `torch.float32` to allow gradient computation and backpropagation
+    
+    Output:
+           dataset = TensorDataset, contains all coupled input-target samples for each reach and use
+    '''
+    # initialize stacked dictionaries
+    stacked_dict = {'input': [], 'target': []}
+    stacked_ci = []
+    for folder in os.listdir(dir_folders):
+        if train_val_test in folder:
+            # get all available reaches
+            reach_id = folder.split('_r',1)[1]
+            reach_id_int = int(reach_id)
+            reach_str = reach_to_str(reach_id_int)
+            inputs, target = combine_datasets(train_val_test, int(reach_id), year_target, nonwater_threshold, 
+                                              nodata_value, nonwater_value, dir_folders, collection, scaled_classes)
+            
+            stacked_dict['input'].extend(inputs)
+            stacked_dict['target'].extend(target)
+
+            T = year_target - 1
+            for input_paths in inputs:
+                if len(input_paths) != T:
+                    raise ValueError(f"Expected {T} input paths, got {len(input_paths)}")
+
+                years = [parse_year_from_path(p) for p in input_paths]  # len=T
+                ci_T = []
+                for y in years:
+                    ci_vec = load_ci(
+                        reach=reach_str,
+                        year=y,
+                        months=ci_months,
+                        csv_path=ci_csv_path,
+                        fill_value=ci_fill_value,
+                    )  # (12,)
+                    ci_T.append(ci_vec)
+
+                ci_T = np.stack(ci_T, axis=0)  # (T,12)
+                stacked_ci.append(ci_T)
+        
+    # create tensors
+    if dtype is None:
+        input_tensor = torch.tensor(stacked_dict['input'])        # removed device=device
+        target_tensor = torch.tensor(stacked_dict['target'])      # removed device=device
+    else:
+        input_tensor = torch.tensor(stacked_dict['input'], dtype=dtype)       # removed device=device
+        target_tensor = torch.tensor(stacked_dict['target'], dtype=dtype)     # removed device=device
+
+    ci_tensor = torch.tensor(stacked_ci, dtype=torch.float32)  # (N_samples, T, 12)
+    dataset = TensorDataset(input_tensor, target_tensor, ci_tensor)
+    
+    return dataset
 
 def create_split_datasets(train_val_test, reach, month, use_dataset, year_end_train=2009, year_end_val=2015, year_target=5, nodata_value=-1,
                           dir_folders=r'data\satellite', collection=r'JRC_GSW1_4_MonthlyHistory', scaled_classes=True):
