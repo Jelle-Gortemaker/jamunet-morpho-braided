@@ -110,6 +110,30 @@ def create_list_images(train_val_test, reach, dir_folders=r'data\satellite\datas
             list_dir_images.append(path_image)
     return list_dir_images
 
+
+
+
+#NEW FUNCTION 
+
+def extract_year_and_reach(path: str):
+    fname = Path(path).name  # e.g. "1988_03_01_training_r1.tif"
+
+    # Year: first 4 digits at start
+    m_year = re.match(r"^(19|20)\d{2}", fname)
+    if not m_year:
+        raise ValueError(f"No valid year found in filename: {fname}")
+    year = int(m_year.group())
+
+    # Reach: r + digits anywhere
+    m_reach = re.search(r"r\d+", fname)
+    if not m_reach:
+        raise ValueError(f"No reach (r#) found in filename: {fname}")
+    reach = m_reach.group()
+    return year, reach
+
+
+
+
 def create_datasets(train_val_test, reach, year_target=5, nodata_value=-1, dir_folders=r'data\satellite\dataset', 
                     collection=r'JRC_GSW1_4_MonthlyHistory', scaled_classes=True):
     '''
@@ -158,14 +182,13 @@ def create_datasets(train_val_test, reach, year_target=5, nodata_value=-1, dir_f
     input_dataset = []
     target_dataset = []
     years = []
+    reach = []
     
-    print(list_dir_images)
-    print(len(list_dir_images))
+    #print(list_dir_images)
+    #print(len(list_dir_images))
 
-    print(list_dir_images[0])
-    fname = Path(path).name
-    print(fname)
-    
+    #print(list_dir_images[0])
+    extract_year_and_reach(list_dir_images[0])
 
     '''
     for i in range(len(good_images_array) - year_target + 1):
@@ -183,9 +206,10 @@ def create_datasets(train_val_test, reach, year_target=5, nodata_value=-1, dir_f
         input_dataset.append(good_images_array[i:i+year_target-1])
         #print(i)
         target_dataset.append([good_images_array[i+year_target-1]])
-
-
-    return input_dataset, target_dataset
+        years.append(extract_year_and_reach(list_dir_images[i])[0])
+        reach.append(extract_year_and_reach(list_dir_images[i])[1])
+    print(input_dataset, target_dataset, years, reach)
+    return input_dataset, target_dataset, years, reach
 
 def combine_datasets(train_val_test, reach, year_target=5, nonwater_threshold=480000, nodata_value=-1, nonwater_value=0,   
                      dir_folders=r'data\satellite\dataset', collection=r'JRC_GSW1_4_MonthlyHistory', scaled_classes=True):
@@ -222,7 +246,7 @@ def combine_datasets(train_val_test, reach, year_target=5, nonwater_threshold=48
            filtered_input_dataset, filtered_target_dataset = lists, contain adequate image combinations for input and target datasets, respectively,
                                                              based on `non-water` threshold
     '''
-    input_dataset, target_dataset = create_datasets(train_val_test, reach, year_target, nodata_value, dir_folders, collection, scaled_classes)
+    input_dataset, target_dataset, years, reach = create_datasets(train_val_test, reach, year_target, nodata_value, dir_folders, collection, scaled_classes)
 
     filtered_input_dataset, filtered_target_dataset = [], []
     # filter pairs based on the specified threshold
