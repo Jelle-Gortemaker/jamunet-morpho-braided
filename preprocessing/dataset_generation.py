@@ -1,12 +1,14 @@
 # This module contains the functions used for the dataset generation needed as input and target for the deep-learning model
 
 import os
+from pathlib import Path
 import torch 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 import numpy as np
 import pandas as pd
+import re
 
 from osgeo import gdal 
 from torch.utils.data import TensorDataset 
@@ -79,7 +81,7 @@ def create_dir_list(train_val_test, dir_folders=r'data\satellite\dataset', colle
 
 def create_list_images(train_val_test, reach, dir_folders=r'data\satellite\dataset', collection=r'JRC_GSW1_4_MonthlyHistory'):
     '''
-    Rreturn the paths of the satellite images present within a folder given use and reach. 
+    Return the paths of the satellite images present within a folder given use and reach. 
     It will be used later for loading and creating the dataset.
 
     Inputs:
@@ -104,6 +106,7 @@ def create_list_images(train_val_test, reach, dir_folders=r'data\satellite\datas
         # get only .tif files
         if image.endswith('.tif'):
             path_image = os.path.join(folder, image)
+            #print(path_image)
             list_dir_images.append(path_image)
     return list_dir_images
 
@@ -150,13 +153,37 @@ def create_datasets(train_val_test, reach, year_target=5, nodata_value=-1, dir_f
     # replace missing data - images are now binary!
     good_images_array = [np.where(image==nodata_value, avg_imgs[i], image) for i, image in enumerate(images_array)]
         
+    #print(f'list_dir_images: {list_dir_images}')
+
     input_dataset = []
     target_dataset = []
+    years = []
     
+    print(list_dir_images)
+    print(len(list_dir_images))
+
+    print(list_dir_images[0])
+    fname = Path(path).name
+    print(fname)
+    
+
+    '''
+    for i in range(len(good_images_array) - year_target + 1):
+        path = good_images_array[i]              # e.g. your tif path
+        print(path)
+        fname = Path(path).name                  # "1988_03_01_training_r17.tif"
+        print(fname)
+        year = int(fname[:4])                    # 1988
+        print(year)
+        years.append(year)
+    '''
     # loop through images to append these in the originally empty lists
+    
     for i in range(len(good_images_array)-year_target+1): # add +1 at the end to include last available year
         input_dataset.append(good_images_array[i:i+year_target-1])
+        #print(i)
         target_dataset.append([good_images_array[i+year_target-1]])
+
 
     return input_dataset, target_dataset
 
@@ -340,7 +367,7 @@ def create_full_dataset(train_val_test, year_target=5, nonwater_threshold=480000
     
     dataset = TensorDataset(input_tensor, target_tensor)
     return dataset
-
+"""
 # ----------------------------------------- # 
 # TEMPORAL SPLIT #
 # ----------------------------------------- # 
@@ -395,7 +422,6 @@ def split_list(train_val_test, reach, month, year_end_train=2009, year_end_val=2
         elif year > year_end_val:
             test_list.append(path)
     return train_list, val_list, test_list
-    """
 
 
 
@@ -454,24 +480,28 @@ def create_full_dataset(train_val_test, year_target=5, nonwater_threshold=480000
     stacked_dict = {'input': [], 'target': []}
     stacked_ci = []
     for folder in os.listdir(dir_folders):
+        #print(folder)
         if train_val_test in folder:
             # get all available reaches
             reach_id = folder.split('_r',1)[1]
+            #print(f'reach_id: {reach_id}')
             reach_id_int = int(reach_id)
             reach_str = reach_to_str(reach_id_int)
+            #print(f'reach_str: {reach_str}')
             inputs, target = combine_datasets(train_val_test, int(reach_id), year_target, nonwater_threshold, 
                                               nodata_value, nonwater_value, dir_folders, collection, scaled_classes)
             
             stacked_dict['input'].extend(inputs)
             stacked_dict['target'].extend(target)
-
+            #print(stacked_dict)
             T = year_target - 1
+            """
             for input_paths in inputs:
                 if len(input_paths) != T:
                     raise ValueError(f"Expected {T} input paths, got {len(input_paths)}")
 
-                years = [parse_year_from_path(p) for p in input_paths]  # len=T
                 ci_T = []
+                
                 for y in years:
                     ci_vec = load_ci(
                         reach=reach_str,
@@ -481,9 +511,9 @@ def create_full_dataset(train_val_test, year_target=5, nonwater_threshold=480000
                         fill_value=ci_fill_value,
                     )  # (12,)
                     ci_T.append(ci_vec)
-
                 ci_T = np.stack(ci_T, axis=0)  # (T,12)
                 stacked_ci.append(ci_T)
+                """
         
     # create tensors
     if dtype is None:
@@ -492,7 +522,6 @@ def create_full_dataset(train_val_test, year_target=5, nonwater_threshold=480000
     else:
         input_tensor = torch.tensor(stacked_dict['input'], dtype=dtype)       # removed device=device
         target_tensor = torch.tensor(stacked_dict['target'], dtype=dtype)     # removed device=device
-
     ci_tensor = torch.tensor(stacked_ci, dtype=torch.float32)  # (N_samples, T, 12)
     dataset = TensorDataset(input_tensor, target_tensor, ci_tensor)
     
