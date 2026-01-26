@@ -208,7 +208,7 @@ def create_datasets(train_val_test, reach, year_target=5, nodata_value=-1, dir_f
         target_dataset.append([good_images_array[i+year_target-1]])
         years.append(extract_year_and_reach(list_dir_images[i])[0])
         reach.append(extract_year_and_reach(list_dir_images[i])[1])
-    print(input_dataset, target_dataset, years, reach)
+    #print(input_dataset, target_dataset, years, reach)
     return input_dataset, target_dataset, years, reach
 
 def combine_datasets(train_val_test, reach, year_target=5, nonwater_threshold=480000, nodata_value=-1, nonwater_value=0,   
@@ -517,6 +517,7 @@ def create_full_dataset(train_val_test, year_target=5, nonwater_threshold=480000
             
             stacked_dict['input'].extend(inputs)
             stacked_dict['target'].extend(target)
+            
             #print(stacked_dict)
             T = year_target - 1
             """
@@ -547,7 +548,9 @@ def create_full_dataset(train_val_test, year_target=5, nonwater_threshold=480000
         input_tensor = torch.tensor(stacked_dict['input'], dtype=dtype)       # removed device=device
         target_tensor = torch.tensor(stacked_dict['target'], dtype=dtype)     # removed device=device
     ci_tensor = torch.tensor(stacked_ci, dtype=torch.float32)  # (N_samples, T, 12)
-    dataset = TensorDataset(input_tensor, target_tensor, ci_tensor)
+    zeros = torch.zeros(len(input_tensor))
+    print(input_tensor.shape, target_tensor.shape, zeros.shape)
+    dataset = TensorDataset(input_tensor, target_tensor, zeros) 
     
     return dataset
 
