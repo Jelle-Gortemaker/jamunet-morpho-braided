@@ -243,14 +243,14 @@ def combine_datasets(train_val_test, reach, year_target=5, nonwater_threshold=48
                             default: True, pixel classes are scaled (recommended).
                         
     Output:
-           filtered_input_dataset, filtered_target_dataset = lists, contain adequate image combinations for input and target datasets, respectively,
-                                                             based on `non-water` threshold
+           filtered_input_dataset, filtered_target_dataset, filtered_years = lists, contain adequate image combinations for input and target datasets, respectively,
+                                                             based on `non-water` threshold, plus corresponding years
     '''
-    input_dataset, target_dataset, years, reach = create_datasets(train_val_test, reach, year_target, nodata_value, dir_folders, collection, scaled_classes)
+    input_dataset, target_dataset, years, reach_list = create_datasets(train_val_test, reach, year_target, nodata_value, dir_folders, collection, scaled_classes)
 
-    filtered_input_dataset, filtered_target_dataset = [], []
+    filtered_input_dataset, filtered_target_dataset, filtered_years = [], [], []
     # filter pairs based on the specified threshold
-    for input_images, target_image in zip(input_dataset, target_dataset):
+    for idx, (input_images, target_image) in enumerate(zip(input_dataset, target_dataset)):
         input_combs = []
         # check input images
         for img in input_images:
@@ -269,7 +269,8 @@ def combine_datasets(train_val_test, reach, year_target=5, nonwater_threshold=48
                 
                 filtered_input_dataset.append(input_tensor)
                 filtered_target_dataset.append(target_tensor)
-    return filtered_input_dataset, filtered_target_dataset
+                filtered_years.append(years[idx])
+    return filtered_input_dataset, filtered_target_dataset, filtered_years
 
 
 
@@ -322,6 +323,11 @@ def load_ci_norm_vector(
 
     # Filter to reach + year
     sub = df[(df["r"] == reach) & (df["month"].dt.year == year)].copy()
+    # Fallback: if no rows and reach is unpadded training format (e.g., r7), try zero-padded (r07)
+    if sub.empty and re.fullmatch(r"r\d+", reach):
+        try_reach = f"r{int(reach[1:]):02d}"
+        sub = df[(df["r"] == try_reach) & (df["month"].dt.year == year)].copy()
+
     if sub.empty:
         raise ValueError(f"No rows found for reach='{reach}' and year={year}.")
 
@@ -463,15 +469,20 @@ def parse_year_from_path(path: str) -> int:
     return int(m.group(0))
 
 def reach_to_str(reach_id: int) -> str:
-    # adjust if your CSV uses a different reach format
-    return f"r{int(reach_id):02d}"
+    # CSV mapping: testing=r00, validation=r01, training=r1..r28 (no leading zero)
+    if reach_id == 0:
+        return "r00"
+    if reach_id == 1:
+        return "r01"
+    return f"r{int(reach_id)}"
 
 
 def create_full_dataset(train_val_test, year_target=5, nonwater_threshold=480000, nodata_value=-1, nonwater_value=0, dir_folders=r'data\satellite\dataset', 
-                        collection=r'JRC_GSW1_4_MonthlyHistory', scaled_classes=True, device='cuda:0', dtype=torch.int64, ci_csv_path=r"Brahmaputra_CI_values.csv", ci_months = (1,2,3,4,5,6,7,8,9,10,11,12), ci_fill_value=np.nan):
+                        collection=r'JRC_GSW1_4_MonthlyHistory', scaled_classes=True, device='cuda:0', dtype=torch.int64, ci_csv_path=r"preprocessing/Brahmaputra_merged_output.csv", ci_months=(1,2,3,4,5,6,7,8,9,10,11,12), ci_fill_value=np.nan):
     '''
     Generate the full dataset for the given use, combining all reaches.
     Stack all different pairs within one use in order to have the dataset ready for the training, validation and testing of the model.
+    Includes CI (Channel Index) values from the Brahmaputra CSV for each sample.
 
     Inputs:
            train_val_test = str, specifies what the images are used for.
@@ -496,57 +507,58 @@ def create_full_dataset(train_val_test, year_target=5, nonwater_threshold=480000
                     default: 'cuda: 0' (GPU), other availble option: 'cpu'
            dtype = class, specifies the data type for torch.tensor method.
                    default: torch.int64, it also accepts `torch.float32` to allow gradient computation and backpropagation
+           ci_csv_path = str, path to the Brahmaputra CI CSV file
+                         default: r"preprocessing/Brahmaputra_merged_output.csv"
+           ci_months = tuple of ints, months to extract from CI CSV (1-12)
+                       default: all 12 months
+           ci_fill_value = float, value to use when CI data is missing
+                           default: np.nan
     
     Output:
-           dataset = TensorDataset, contains all coupled input-target samples for each reach and use
+           dataset = TensorDataset, contains all coupled input-target-ci samples for each reach and use
     '''
     # initialize stacked dictionaries
     stacked_dict = {'input': [], 'target': []}
     stacked_ci = []
+    
     for folder in os.listdir(dir_folders):
-        #print(folder)
         if train_val_test in folder:
             # get all available reaches
-            reach_id = folder.split('_r',1)[1]
-            #print(f'reach_id: {reach_id}')
+            reach_id = folder.split('_r', 1)[1]
             reach_id_int = int(reach_id)
-            reach_str = reach_to_str(reach_id_int)
-            #print(f'reach_str: {reach_str}')
-            inputs, target = combine_datasets(train_val_test, int(reach_id), year_target, nonwater_threshold, 
+            reach_str = reach_to_str(reach_id_int)  # e.g., 'r1', 'r00', 'r01'
+            
+            inputs, targets, years = combine_datasets(train_val_test, reach_id_int, year_target, nonwater_threshold, 
                                               nodata_value, nonwater_value, dir_folders, collection, scaled_classes)
             
             stacked_dict['input'].extend(inputs)
-            stacked_dict['target'].extend(target)
-            #print(stacked_dict)
-            T = year_target - 1
-            """
-            for input_paths in inputs:
-                if len(input_paths) != T:
-                    raise ValueError(f"Expected {T} input paths, got {len(input_paths)}")
-
-                ci_T = []
-                
-                for y in years:
-                    ci_vec = load_ci(
+            stacked_dict['target'].extend(targets)
+            
+            # Load CI values for each sample
+            for year in years:
+                try:
+                    ci_vec = load_ci_norm_vector(
                         reach=reach_str,
-                        year=y,
+                        year=year,
                         months=ci_months,
                         csv_path=ci_csv_path,
                         fill_value=ci_fill_value,
-                    )  # (12,)
-                    ci_T.append(ci_vec)
-                ci_T = np.stack(ci_T, axis=0)  # (T,12)
-                stacked_ci.append(ci_T)
-                """
+                    )  # shape: (len(ci_months),)
+                    stacked_ci.append(ci_vec)
+                except Exception as e:
+                    print(f"Warning: Could not load CI for reach={reach_str}, year={year}: {e}")
+                    # Use NaN-filled vector as fallback
+                    stacked_ci.append(np.full(len(ci_months), ci_fill_value, dtype=np.float32))
         
     # create tensors
     if dtype is None:
-        input_tensor = torch.tensor(stacked_dict['input'])        # removed device=device
-        target_tensor = torch.tensor(stacked_dict['target'])      # removed device=device
+        input_tensor = torch.tensor(stacked_dict['input'], dtype=torch.float32)
+        target_tensor = torch.tensor(stacked_dict['target'], dtype=torch.float32)
     else:
-        input_tensor = torch.tensor(stacked_dict['input'], dtype=dtype)       # removed device=device
-        target_tensor = torch.tensor(stacked_dict['target'], dtype=dtype)     # removed device=device
-    ci_tensor = torch.tensor(stacked_ci, dtype=torch.float32)  # (N_samples, T, 12)
+        input_tensor = torch.tensor(stacked_dict['input'], dtype=dtype)
+        target_tensor = torch.tensor(stacked_dict['target'], dtype=dtype)
+    
+    ci_tensor = torch.tensor(stacked_ci, dtype=torch.float32)  # (N_samples, len(ci_months))
     dataset = TensorDataset(input_tensor, target_tensor, ci_tensor)
     
     return dataset
@@ -713,10 +725,12 @@ def combine_split_datasets(train_val_test, reach, month, use_dataset, year_end_t
     return filtered_dataset
 
 def create_split_dataset(month, use_dataset, year_target=5, year_end_train=2009, year_end_val=2015, nonwater_threshold=480000, nodata_value=-1, nonwater_value=0, 
-                         dir_folders=r'data\satellite', collection=r'JRC_GSW1_4_MonthlyHistory', scaled_classes=True, device='cuda:0', dtype=torch.int64):
+                         dir_folders=r'data\satellite', collection=r'JRC_GSW1_4_MonthlyHistory', scaled_classes=True, device='cuda:0', dtype=torch.int64,
+                         ci_csv_path=r"preprocessing/Brahmaputra_merged_output.csv", ci_months=(1,2,3,4,5,6,7,8,9,10,11,12), ci_fill_value=np.nan):
     '''
     Generate the full dataset for the given use, combining all reaches.
     Stack all different pairs within one use in order to have the dataset ready for the training, validation and testing of the model.
+    Includes CI (Channel Index) values from the Brahmaputra CSV for each sample.
 
     Inputs:
            month = int, represents month of the year from which images are taken. 
@@ -747,20 +761,30 @@ def create_split_dataset(month, use_dataset, year_target=5, year_end_train=2009,
                     default: 'cuda:0' (GPU), other availble option: 'cpu'
            dtype = class, specifies the data type for torch.tensor method.
                    default: torch.int64, it also accepts `torch.float32` to allow gradient computation and backpropagation
+           ci_csv_path = str, path to the Brahmaputra CI CSV file
+                         default: r"preprocessing/Brahmaputra_merged_output.csv"
+           ci_months = tuple of ints, months to extract from CI CSV (1-12)
+                       default: all 12 months
+           ci_fill_value = float, value to use when CI data is missing
+                           default: np.nan
     
     Output:
-           dataset = TensorDataset, contains all coupled input-target samples for each reach and use
+           dataset = TensorDataset, contains all coupled input-target-ci samples for each reach and use
     '''
     train_val_test = ['training', 'validation', 'testing']
     dir_dataset = os.path.join(dir_folders, rf'dataset_month{month}')
-    stacked_dataset= {'input': [], 'target': []}
+    stacked_dataset = {'input': [], 'target': []}
+    stacked_ci = []
     
     # loop over folder and use 
     for folder in os.listdir(dir_dataset):
         for use in train_val_test:
             if use in folder:
                 # loop through all reaches
-                reach_id = folder.split('_r',1)[1]
+                reach_id = folder.split('_r', 1)[1]
+                reach_id_int = int(reach_id)
+                reach_str = reach_to_str(reach_id_int)  # e.g., 'r1', 'r00', 'r01'
+                
                 filtered_dataset = combine_split_datasets(
                     use, reach_id, month, use_dataset, year_end_train, year_end_val, 
                     year_target, nonwater_threshold, nodata_value, nonwater_value,  
@@ -769,7 +793,46 @@ def create_split_dataset(month, use_dataset, year_target=5, year_end_train=2009,
     
                 stacked_dataset['input'].extend(filtered_dataset[0])
                 stacked_dataset['target'].extend(filtered_dataset[1])
+                
+                # Extract years from image paths and load CI values
+                # Get the image paths for this reach/use combination
+                train_list, val_list, test_list = split_list(use, reach_id_int, month, year_end_train, year_end_val, dir_folders, collection)
+                
+                if use_dataset == 'training':
+                    image_list = train_list
+                elif use_dataset == 'validation':
+                    image_list = val_list
+                elif use_dataset == 'testing':
+                    image_list = test_list
+                else:
+                    image_list = []
+                
+                # Create mapping from year to CI values for efficiency
+                year_to_ci = {}
+                for img_path in image_list:
+                    year = parse_year_from_path(img_path)
+                    if year not in year_to_ci:
+                        try:
+                            ci_vec = load_ci_norm_vector(
+                                reach=reach_str,
+                                year=year,
+                                months=ci_months,
+                                csv_path=ci_csv_path,
+                                fill_value=ci_fill_value,
+                            )
+                            year_to_ci[year] = ci_vec
+                        except Exception as e:
+                            print(f"Warning: Could not load CI for reach={reach_str}, year={year}: {e}")
+                            year_to_ci[year] = np.full(len(ci_months), ci_fill_value, dtype=np.float32)
+                
+                # Add CI values for each input-target pair (use year from first image in each sequence)
+                for img_path in image_list[:len(filtered_dataset[0])]:
+                    year = parse_year_from_path(img_path)
+                    stacked_ci.append(year_to_ci.get(year, np.full(len(ci_months), ci_fill_value, dtype=np.float32)))
        
-    inputs, targets = torch.tensor(stacked_dataset['input'], dtype=dtype, device=device), torch.tensor(stacked_dataset['target'], dtype=dtype, device=device)
-    dataset = TensorDataset(inputs, targets)
+    inputs = torch.tensor(stacked_dataset['input'], dtype=dtype)
+    targets = torch.tensor(stacked_dataset['target'], dtype=dtype)
+    ci_tensor = torch.tensor(stacked_ci, dtype=torch.float32)  # (N_samples, len(ci_months))
+    
+    dataset = TensorDataset(inputs, targets, ci_tensor)
     return dataset

@@ -121,8 +121,12 @@ class UNet3D(nn.Module):
         self.up4 = Up(hid_dims[1], hid_dims[0], kernel_size, bilinear, drop_channels, p_drop)
         self.outc = OutConv(hid_dims[0], n_classes)
         self.sigmoid = nn.Sigmoid()
+        
+        # CI embedding layer for bottleneck injection
+        # Assumes 12 CI values (one per month) from Brahmaputra_merged_output.csv
+        self.ci_embedding = nn.Linear(12, hid_dims[3])
 
-    def forward(self, x):
+    def forward(self, x, ci_values=None):
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
@@ -132,6 +136,14 @@ class UNet3D(nn.Module):
         x4_temporal = x4.unsqueeze(2)  # add temporal dimension
         x4_temporal = self.temporal_conv(x4_temporal)
         x4 = x4_temporal.squeeze(2)  # remove temporal dimension
+        
+        # Inject CI values into bottleneck if provided
+        if ci_values is not None:
+            ci_embedded = self.ci_embedding(ci_values)  # (batch_size, hid_dims[3])
+            # Reshape for spatial broadcasting: (batch_size, hid_dims[3], 1, 1)
+            ci_spatial = ci_embedded.unsqueeze(-1).unsqueeze(-1)
+            # Add CI information to bottleneck features
+            x4 = x4 + ci_spatial
 
         x5 = self.down4(x4)
         x = self.up1(x5, x4)

@@ -22,7 +22,7 @@ else:
 print(f'Using device: {device}')
 '''
 
-def get_predictions(model, input_dataset, device='cuda:0'):
+def get_predictions(model, input_dataset, ci_values=None, device='cuda:0'):
     '''
     Compute the predictions given the deep-learning model class and input dataset
 
@@ -30,6 +30,7 @@ def get_predictions(model, input_dataset, device='cuda:0'):
            model = class, deep-learning model
            input_dataset = TensorDataset, inputs for the model 
                            The input dataset has shape (n_samples, n_years_input=4, height=1000, width=500), 
+           ci_values = torch.Tensor, optional CI values with shape (n_samples, 12)
            device = str, specifies the device where memory is allocated for performing the computations
                     default: 'cuda:0', other availble option: 'cpu'
                     Always remember to correctly set this key before running the simulations to avoid issues
@@ -38,7 +39,11 @@ def get_predictions(model, input_dataset, device='cuda:0'):
     Output:
            predictions = list, model predictions
     '''    
-    predictions = model(input_dataset.to(device))  
+    if ci_values is not None:
+        ci_values = ci_values.to(device)
+        predictions = model(input_dataset.to(device), ci_values)
+    else:
+        predictions = model(input_dataset.to(device))
     return predictions.squeeze(1) 
 
 def training_unet(model, loader, optimizer, nonwater=0, water=1, pixel_size=60, water_threshold=0.5, 
@@ -89,9 +94,10 @@ def training_unet(model, loader, optimizer, nonwater=0, water=1, pixel_size=60, 
     for batch in loader:
         input = batch[0].to(device)
         target = batch[1].to(device)
+        ci_values = batch[2].to(device) if len(batch) > 2 else None
 
         # get predictions
-        predictions = get_predictions(model, input, device=device)
+        predictions = get_predictions(model, input, ci_values=ci_values, device=device)
         
         # compute binary classification loss
         binary_loss = choose_loss(predictions, target, loss_f)
@@ -170,9 +176,10 @@ def validation_unet(model, loader, nonwater=0, water=1, device='cuda:0', loss_f=
         for batch in loader:
             input = batch[0].to(device)
             target = batch[1].to(device)
+            ci_values = batch[2].to(device) if len(batch) > 2 else None
     
             # get predictions
-            predictions = get_predictions(model, input, device=device)
+            predictions = get_predictions(model, input, ci_values=ci_values, device=device)
             # generate binary predictions
             binary_predictions = (predictions >= water_threshold).float()
             # compute loss 
