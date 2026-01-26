@@ -711,8 +711,9 @@ def total_losses_metrics_dataset(model, dataset, loss_f='BCE', nonwater=0, water
         for batch in test_loader:
             input = batch[0].to(device)
             target = batch[1].to(device)
+            ci = batch[2].to(device) if len(batch) > 2 else None
     
-            predictions = get_predictions(model, input, device=device)
+            predictions = get_predictions(model, input, ci=ci, device=device)
             binary_predictions = (predictions >= water_threshold).float()
             
             # compute loss without scaling by batch size
@@ -790,9 +791,10 @@ def total_losses_metrics_dataset(model, dataset, loss_f='BCE', nonwater=0, water
         for batch in test_loader:
             input = batch[0].to(device)
             target = batch[1].to(device)
+            ci = batch[2].to(device) if len(batch) > 2 else None
     
             # get predictions
-            predictions = get_predictions(model, input, device=device)
+            predictions = get_predictions(model, input, ci=ci, device=device)
             binary_predictions = (predictions >= water_threshold).float()
             # compute loss 
             loss = choose_loss(predictions, target, loss_f)
@@ -1125,10 +1127,12 @@ def correlation_metrics(model, dataset, loss_f='BCE', nonwater=0, water=1, water
     losses, accuracies, precisions, recalls, f1_scores, csi_scores = [], [], [], [], [], []
     
     for sample in range(len(dataset)):
-        single_input = dataset[sample][0].unsqueeze(0).to(device)
-        single_target = dataset[sample][1].to(device)
+        sample_item = dataset[sample]
+        single_input = sample_item[0].unsqueeze(0).to(device)
+        single_target = sample_item[1].to(device)
+        ci = sample_item[2].unsqueeze(0).to(device) if len(sample_item) > 2 else None
         
-        prediction = get_predictions(model, single_input, device).squeeze(0)
+        prediction = get_predictions(model, single_input, ci=ci, device=device).squeeze(0)
               
         loss = choose_loss(prediction, single_target, loss_f).detach()
         accuracy, precision, recall, f1_score, csi_score = compute_metrics(prediction.detach(), single_target, nonwater, water, water_threshold) 
@@ -1233,9 +1237,11 @@ def correlation_erdep(model, dataset, nonwater=0, water=1, water_threshold=0.5, 
     pred_erosion, pred_deposition, real_erosion, real_deposition = [], [], [], []
     
     for sample in range(len(dataset)):
-        single_input = dataset[sample][0].unsqueeze(0).to(device)
-        single_target = dataset[sample][1].to(device)
-        prediction = get_predictions(model, single_input, device).squeeze(0)
+        sample_item = dataset[sample]
+        single_input = sample_item[0].unsqueeze(0).to(device)
+        single_target = sample_item[1].to(device)
+        ci = sample_item[2].unsqueeze(0).to(device) if len(sample_item) > 2 else None
+        prediction = get_predictions(model, single_input, ci=ci, device=device).squeeze(0)
         binary_prediction = (prediction >= water_threshold).float()
 
         predicted_erosion_deposition = get_erosion_deposition(single_input[0][-1].to(device), binary_prediction.to(device), 

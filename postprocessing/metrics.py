@@ -64,12 +64,17 @@ def single_roc_curve(model, dataset, sample, train_val_test='testing', device='c
     # need internal import statement to avoid circular imports
     from model.train_eval import get_predictions
 
-    single_input = dataset[sample][0]
-    single_target = dataset[sample][1].cpu()
+    sample_item = dataset[sample]
+    single_input = sample_item[0]
+    single_target = sample_item[1].cpu()
+    ci = sample_item[2] if len(sample_item) > 2 else None
     
     target_flat = single_target.flatten()
 
-    prediction = get_predictions(model, single_input.unsqueeze(0), device)
+    if ci is None:
+        prediction = get_predictions(model, single_input.unsqueeze(0), device=device)
+    else:
+        prediction = get_predictions(model, single_input.unsqueeze(0), ci=ci.unsqueeze(0), device=device)
     prediction_flat = prediction.detach().cpu().flatten() # unsqueeze needed to match dimensions
     
     # compute ROC curve and ROC area
@@ -177,12 +182,17 @@ def single_pr_curve(model, dataset, sample, train_val_test='testing', device='cu
     # need internal import statement to avoid circular imports
     from model.train_eval import get_predictions
 
-    single_input = dataset[sample][0].to(device)
-    single_target = dataset[sample][1]
+    sample_item = dataset[sample]
+    single_input = sample_item[0].to(device)
+    single_target = sample_item[1]
+    ci = sample_item[2] if len(sample_item) > 2 else None
     
     target_flat = single_target.flatten().to(device)
 
-    prediction = get_predictions(model, single_input.unsqueeze(0), device)
+    if ci is None:
+        prediction = get_predictions(model, single_input.unsqueeze(0), device=device)
+    else:
+        prediction = get_predictions(model, single_input.unsqueeze(0), ci=ci.unsqueeze(0).to(device), device=device)
     prediction_flat = prediction.detach().flatten() # unsqueeze needed to match dimensions
     
     # compute PR curve and average score
@@ -306,12 +316,17 @@ def balanced_accuracy(model, dataset, sample, train_val_test='testing', device='
     # need internal import statement to avoid circular imports
     from model.train_eval import get_predictions
     
-    single_input = dataset[sample][0].to(device)
-    single_target = dataset[sample][1]
+    sample_item = dataset[sample]
+    single_input = sample_item[0].to(device)
+    single_target = sample_item[1]
+    ci = sample_item[2] if len(sample_item) > 2 else None
     
     target_flat = single_target.flatten().to(device)
 
-    prediction = get_predictions(model, single_input.unsqueeze(0), device)
+    if ci is None:
+        prediction = get_predictions(model, single_input.unsqueeze(0), device=device)
+    else:
+        prediction = get_predictions(model, single_input.unsqueeze(0), ci=ci.unsqueeze(0).to(device), device=device)
     prediction_flat = prediction.detach().flatten() 
 
     # define thresholds

@@ -83,7 +83,7 @@ class OutConv(nn.Module):
         return x
 
 class UNet3D(nn.Module):
-    def __init__(self, n_channels, n_classes, init_hid_dim=8, kernel_size=3, pooling='max', bilinear=False, drop_channels=False, p_drop=None):
+    def __init__(self, n_channels, n_classes, init_hid_dim=8, kernel_size=3, pooling='max', bilinear=False, drop_channels=False, p_drop=None, ci_dim=None):
         super(UNet3D, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
@@ -93,6 +93,7 @@ class UNet3D(nn.Module):
         self.pooling = pooling
         self.drop_channels = drop_channels
         self.p_drop = p_drop
+        self.ci_dim = ci_dim
 
         hid_dims = [init_hid_dim * (2**i) for i in range(5)]
         self.hid_dims = hid_dims
@@ -110,7 +111,18 @@ class UNet3D(nn.Module):
 
         # downscaling with 2D Convolution followed by pooling
         factor = 2 if bilinear else 1
-        self.down4 = Down(hid_dims[3], hid_dims[4] // factor, kernel_size, pooling, drop_channels, p_drop)
+        self.bottleneck_channels = hid_dims[4] // factor
+        self.down4 = Down(hid_dims[3], self.bottleneck_channels, kernel_size, pooling, drop_channels, p_drop)
+
+        # optional CI conditioning at the bottleneck
+        if self.ci_dim is not None:
+            self.ci_mlp = nn.Sequential(
+                nn.Linear(self.ci_dim, self.bottleneck_channels),
+                nn.ReLU(inplace=True),
+                nn.Linear(self.bottleneck_channels, self.bottleneck_channels),
+            )
+        else:
+            self.ci_mlp = None
 
         # upscaling with 2D Convolution followed by Double Convolution
         self.up1 = Up(hid_dims[4], hid_dims[3] // factor, kernel_size, bilinear, drop_channels, p_drop)
@@ -122,7 +134,7 @@ class UNet3D(nn.Module):
         self.outc = OutConv(hid_dims[0], n_classes)
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x):
+    def forward(self, x, ci=None):
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
@@ -134,6 +146,13 @@ class UNet3D(nn.Module):
         x4 = x4_temporal.squeeze(2)  # remove temporal dimension
 
         x5 = self.down4(x4)
+        if ci is not None:
+            if self.ci_mlp is None:
+                raise ValueError("ci was provided but ci_dim was not set when building the model.")
+            if ci.dim() > 2:
+                ci = ci.view(ci.size(0), -1)
+            ci_feat = self.ci_mlp(ci)
+            x5 = x5 + ci_feat.unsqueeze(-1).unsqueeze(-1)
         x = self.up1(x5, x4)
         x = self.up2(x, x3)
         x = self.up3(x, x2)
