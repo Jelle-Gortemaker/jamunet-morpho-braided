@@ -98,8 +98,9 @@ class UNet3D(nn.Module):
         hid_dims = [init_hid_dim * (2**i) for i in range(5)]
         self.hid_dims = hid_dims
 
-        # initial 2D Convolution
-        self.inc = DoubleConv(n_channels, hid_dims[0], kernel_size=kernel_size, drop_channels=drop_channels, p_drop=p_drop)
+        # initial 2D Convolution (optionally concatenating spatial CI channels)
+        ci_in_channels = n_channels + (ci_dim if ci_dim is not None else 0)
+        self.inc = DoubleConv(ci_in_channels, hid_dims[0], kernel_size=kernel_size, drop_channels=drop_channels, p_drop=p_drop)
 
         # downscaling with 2D Convolution followed by pooling
         self.down1 = Down(hid_dims[0], hid_dims[1], kernel_size, pooling, drop_channels, p_drop)
@@ -114,16 +115,6 @@ class UNet3D(nn.Module):
         self.bottleneck_channels = hid_dims[4] // factor
         self.down4 = Down(hid_dims[3], self.bottleneck_channels, kernel_size, pooling, drop_channels, p_drop)
 
-        # optional CI conditioning at the bottleneck
-        if self.ci_dim is not None:
-            self.ci_mlp = nn.Sequential(
-                nn.Linear(self.ci_dim, self.bottleneck_channels),
-                nn.ReLU(inplace=True),
-                nn.Linear(self.bottleneck_channels, self.bottleneck_channels),
-            )
-        else:
-            self.ci_mlp = None
-
         # upscaling with 2D Convolution followed by Double Convolution
         self.up1 = Up(hid_dims[4], hid_dims[3] // factor, kernel_size, bilinear, drop_channels, p_drop)
         self.up2 = Up(hid_dims[3], hid_dims[2] // factor, kernel_size, bilinear, drop_channels, p_drop)
@@ -135,6 +126,18 @@ class UNet3D(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x, ci=None):
+        if self.ci_dim is not None:
+            if ci is None:
+                ci = x.new_zeros(x.size(0), self.ci_dim)
+            if ci.dim() > 2:
+                ci = ci.view(ci.size(0), -1)
+            if ci.size(1) != self.ci_dim:
+                raise ValueError("ci does not match ci_dim used to build the model.")
+            ci_map = ci.view(ci.size(0), self.ci_dim, 1, 1).expand(-1, -1, x.size(2), x.size(3))
+            x = torch.cat([x, ci_map], dim=1)
+        elif ci is not None:
+            raise ValueError("ci was provided but ci_dim was not set when building the model.")
+
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
@@ -146,13 +149,6 @@ class UNet3D(nn.Module):
         x4 = x4_temporal.squeeze(2)  # remove temporal dimension
 
         x5 = self.down4(x4)
-        if ci is not None:
-            if self.ci_mlp is None:
-                raise ValueError("ci was provided but ci_dim was not set when building the model.")
-            if ci.dim() > 2:
-                ci = ci.view(ci.size(0), -1)
-            ci_feat = self.ci_mlp(ci)
-            x5 = x5 + ci_feat.unsqueeze(-1).unsqueeze(-1)
         x = self.up1(x5, x4)
         x = self.up2(x, x3)
         x = self.up3(x, x2)
