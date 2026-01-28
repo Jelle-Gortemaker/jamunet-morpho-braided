@@ -4,10 +4,27 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+class FiLM(nn.Module):
+    def __init__(self, ci_dim, n_channels):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(ci_dim, n_channels * 2),
+            nn.ReLU(inplace=True),
+            nn.Linear(n_channels * 2, n_channels * 2)
+        )
+
+    def forward(self, x, ci):
+        gamma_beta = self.mlp(ci)
+        gamma, beta = gamma_beta.chunk(2, dim=1)
+        gamma = gamma.unsqueeze(-1).unsqueeze(-1)
+        beta = beta.unsqueeze(-1).unsqueeze(-1)
+        return gamma * x + beta
+
 class DoubleConv(nn.Module):
     """(convolution => [BN] => ReLU) * 2 with 3D Convolution"""
 
-    def __init__(self, in_channels, out_channels, mid_channels=None, kernel_size=3, drop_channels=True, p_drop=None):
+    def __init__(self, in_channels, out_channels, mid_channels=None, kernel_size=3, drop_channels=True, p_drop=None, ci_dim=None):
         super().__init__()
         if not mid_channels:
             mid_channels = out_channels
@@ -19,12 +36,17 @@ class DoubleConv(nn.Module):
         
         # 3D convolution layer added here with a smaller temporal kernel size
         self.conv3d = nn.Conv3d(mid_channels, out_channels, kernel_size=(1, kernel_size, kernel_size), padding=(0, kernel_size//2, kernel_size//2), bias=False)
+        self.film = FiLM(ci_dim, mid_channels) if ci_dim is not None else None
         
         if drop_channels:
             self.double_conv.add_module('dropout', nn.Dropout2d(p=p_drop))
 
-    def forward(self, x):
+    def forward(self, x, ci=None):
         x = self.double_conv(x)  # 2D convolution
+        if self.film is not None:
+            if ci is None:
+                raise ValueError("ci must be provided when ci_dim is set.")
+            x = self.film(x, ci)
         # reshape input for 3D convolution (batch_size, mid_channels, depth = 1, height, width)
         x = x.unsqueeze(2)
         x = self.conv3d(x)  # 3D convolution
@@ -34,19 +56,17 @@ class DoubleConv(nn.Module):
 class Down(nn.Module):
     """Downscaling with maxpool then double conv"""
 
-    def __init__(self, in_channels, out_channels, kernel_size=3, pooling='max', drop_channels=False, p_drop=None):
+    def __init__(self, in_channels, out_channels, kernel_size=3, pooling='max', drop_channels=False, p_drop=None, ci_dim=None):
         super().__init__()
         if pooling == 'max':
             self.pooling = nn.MaxPool2d(2)
         elif pooling == 'avg':
             self.pooling = nn.AvgPool2d(2)
-        self.pool_conv = nn.Sequential(
-            self.pooling,
-            DoubleConv(in_channels, out_channels, kernel_size=kernel_size, drop_channels=drop_channels, p_drop=p_drop)
-        )
+        self.conv = DoubleConv(in_channels, out_channels, kernel_size=kernel_size, drop_channels=drop_channels, p_drop=p_drop, ci_dim=ci_dim)
 
-    def forward(self, x):
-        return self.pool_conv(x)
+    def forward(self, x, ci=None):
+        x = self.pooling(x)
+        return self.conv(x, ci=ci)
 
 class Up(nn.Module):
     """Upscaling then double conv"""
@@ -98,13 +118,13 @@ class UNet3D(nn.Module):
         hid_dims = [init_hid_dim * (2**i) for i in range(5)]
         self.hid_dims = hid_dims
 
-        # initial 2D Convolution
-        self.inc = DoubleConv(n_channels, hid_dims[0], kernel_size=kernel_size, drop_channels=drop_channels, p_drop=p_drop)
+        # initial 2D Convolution (FiLM conditioning if ci_dim is provided)
+        self.inc = DoubleConv(n_channels, hid_dims[0], kernel_size=kernel_size, drop_channels=drop_channels, p_drop=p_drop, ci_dim=ci_dim)
 
         # downscaling with 2D Convolution followed by pooling
-        self.down1 = Down(hid_dims[0], hid_dims[1], kernel_size, pooling, drop_channels, p_drop)
-        self.down2 = Down(hid_dims[1], hid_dims[2], kernel_size, pooling, drop_channels, p_drop)
-        self.down3 = Down(hid_dims[2], hid_dims[3], kernel_size, pooling, drop_channels, p_drop)
+        self.down1 = Down(hid_dims[0], hid_dims[1], kernel_size, pooling, drop_channels, p_drop, ci_dim=ci_dim)
+        self.down2 = Down(hid_dims[1], hid_dims[2], kernel_size, pooling, drop_channels, p_drop, ci_dim=ci_dim)
+        self.down3 = Down(hid_dims[2], hid_dims[3], kernel_size, pooling, drop_channels, p_drop, ci_dim=ci_dim)
 
         # temporal convolution with 3D Convolution
         self.temporal_conv = nn.Conv3d(hid_dims[3], hid_dims[3], kernel_size=(1, 3, 3), padding=(0, 1, 1))
@@ -112,17 +132,7 @@ class UNet3D(nn.Module):
         # downscaling with 2D Convolution followed by pooling
         factor = 2 if bilinear else 1
         self.bottleneck_channels = hid_dims[4] // factor
-        self.down4 = Down(hid_dims[3], self.bottleneck_channels, kernel_size, pooling, drop_channels, p_drop)
-
-        # optional CI conditioning at the bottleneck
-        if self.ci_dim is not None:
-            self.ci_mlp = nn.Sequential(
-                nn.Linear(self.ci_dim, self.bottleneck_channels),
-                nn.ReLU(inplace=True),
-                nn.Linear(self.bottleneck_channels, self.bottleneck_channels),
-            )
-        else:
-            self.ci_mlp = None
+        self.down4 = Down(hid_dims[3], self.bottleneck_channels, kernel_size, pooling, drop_channels, p_drop, ci_dim=ci_dim)
 
         # upscaling with 2D Convolution followed by Double Convolution
         self.up1 = Up(hid_dims[4], hid_dims[3] // factor, kernel_size, bilinear, drop_channels, p_drop)
@@ -135,24 +145,27 @@ class UNet3D(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x, ci=None):
-        x1 = self.inc(x)
-        x2 = self.down1(x1)
-        x3 = self.down2(x2)
-        x4 = self.down3(x3)
+        if self.ci_dim is not None:
+            if ci is None:
+                ci = x.new_zeros(x.size(0), self.ci_dim)
+            if ci.dim() > 2:
+                ci = ci.view(ci.size(0), -1)
+            if ci.size(1) != self.ci_dim:
+                raise ValueError("ci does not match ci_dim used to build the model.")
+        elif ci is not None:
+            raise ValueError("ci was provided but ci_dim was not set when building the model.")
+
+        x1 = self.inc(x, ci=ci)
+        x2 = self.down1(x1, ci=ci)
+        x3 = self.down2(x2, ci=ci)
+        x4 = self.down3(x3, ci=ci)
 
         # temporal 3D Convolution
         x4_temporal = x4.unsqueeze(2)  # add temporal dimension
         x4_temporal = self.temporal_conv(x4_temporal)
         x4 = x4_temporal.squeeze(2)  # remove temporal dimension
 
-        x5 = self.down4(x4)
-        if ci is not None:
-            if self.ci_mlp is None:
-                raise ValueError("ci was provided but ci_dim was not set when building the model.")
-            if ci.dim() > 2:
-                ci = ci.view(ci.size(0), -1)
-            ci_feat = self.ci_mlp(ci)
-            x5 = x5 + ci_feat.unsqueeze(-1).unsqueeze(-1)
+        x5 = self.down4(x4, ci=ci)
         x = self.up1(x5, x4)
         x = self.up2(x, x3)
         x = self.up3(x, x2)
