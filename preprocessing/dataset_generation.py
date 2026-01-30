@@ -110,28 +110,22 @@ def create_list_images(train_val_test, reach, dir_folders=r'data\satellite\datas
             list_dir_images.append(path_image)
     return list_dir_images
 
-
-
-
-#NEW FUNCTION 
-
+# Added function to efficiently extract year and reach from filename.
 def extract_year_and_reach(path: str):
-    fname = Path(path).name  # e.g. "1988_03_01_training_r1.tif"
+    fname = Path(path).name  # For example "1988_03_01_training_r1.tif"
 
-    # Year: first 4 digits at start
+    # Year: look for first 4 digits at start
     m_year = re.match(r"^(19|20)\d{2}", fname)
     if not m_year:
         raise ValueError(f"No valid year found in filename: {fname}")
     year = int(m_year.group())
 
-    # Reach: r + digits anywhere
+    # Reach: look for r + digits anywhere
     m_reach = re.search(r"r\d+", fname)
     if not m_reach:
         raise ValueError(f"No reach (r#) found in filename: {fname}")
     reach = m_reach.group()
     return year, reach
-
-
 
 
 def create_datasets(train_val_test, reach, year_target=5, nodata_value=-1, dir_folders=r'data\satellite\dataset', 
@@ -296,21 +290,16 @@ def load_ci_norm_vector(
     Parameters
     ----------
     reach : str
-        Reach identifier exactly as in the CSV, e.g. 'r1', 'r2', ...
+        Selected reach id 
     year : int
-        Year to select, e.g. 2005
+        Selected year
     months : tuple[int]
-        Months to include, e.g. (5,6,7,8,9,10)
+        Default months to include, e.g. (5,6,7,8,9,10)
     csv_path : str
-        Path to the CI CSV
+        Path to the CI file (CSV)
     fill_value : float or str
-        Value used when a month is missing. Use "reach_mean" to fill with the
-        mean CI_normalized for that reach (default NaN).
 
-    Returns
-    -------
-    np.ndarray
-        Vector of shape (len(months),) with CI_normalized values in the same order as `months`.
+    Returns Vector with CI_normalized value
     """
     df = pd.read_csv(csv_path)
 
@@ -323,8 +312,7 @@ def load_ci_norm_vector(
     # Parse month column to datetime
     df["month"] = pd.to_datetime(df["month"], errors="coerce")
     if df["month"].isna().any():
-        bad = df[df["month"].isna()].head(5)
-        raise ValueError(f"Unparseable values in 'month'. Example rows:\n{bad}")
+        raise ValueError(f"Values in 'month' not parseable.")
 
     # Filter to reach + year
     sub = df[(df["r"] == reach) & (df["month"].dt.year == year)].copy()
@@ -353,67 +341,6 @@ def load_ci_norm_vector(
     if np.isnan(vec).any():
         vec = np.where(np.isnan(vec), fill_value_resolved, vec).astype(np.float32)
     return vec
-
-
-"""
-def create_full_dataset(train_val_test, year_target=5, nonwater_threshold=480000, nodata_value=-1, nonwater_value=0, dir_folders=r'data\satellite\dataset', 
-                        collection=r'JRC_GSW1_4_MonthlyHistory', scaled_classes=True, device='cuda:0', dtype=torch.int64, ):
-    '''
-    Generate the full dataset for the given use, combining all reaches.
-    Stack all different pairs within one use in order to have the dataset ready for the training, validation and testing of the model.
-
-    Inputs:
-           train_val_test = str, specifies what the images are used for.
-                            available options: 'training', 'validation' and 'testing'
-           year_target = int, sets the year predicted after a sequence of input years.
-                         default: 5, input dataset is made of 4 images and 5th year is the predicted one
-           nonwater_threshold = int, min amount of `non-water` pixels allowed in the inputs-target combinations
-                                default: 480000, necessary to filter out only the fully `non-water` images 
-           nodata_value = int, represents pixel value of no data class.
-                          default: -1, based on the updated pixel classes. 
-                          If `scaled_classes` = False, this should be set to 0
-           nonwater_value = int, represents pixel value of non-water class.
-                            default: 0, based on the updated pixel classes. 
-                            If `scaled_classes` = False, this should be set to 1
-           dir_folders = str, directory where folders are stored
-                         default: r'data\satellite\dataset'
-           collection = str, specifies the satellite images collection.
-                        default: r'JRC_GSW1_4_MonthlyHistory', the function is implemented to work only with this dataset
-           scaled_classes = bool, sets whether pixel classes are scaled to the range [-1, 1] or kept within the original one [0, 2]
-                            default: True, pixel classes are scaled (recommended).
-           device = str, specifies device where memory is allocated for performing the computations
-                    default: 'cuda: 0' (GPU), other availble option: 'cpu'
-           dtype = class, specifies the data type for torch.tensor method.
-                   default: torch.int64, it also accepts `torch.float32` to allow gradient computation and backpropagation
-    
-    Output:
-           dataset = TensorDataset, contains all coupled input-target samples for each reach and use
-    '''
-    # initialize stacked dictionaries
-    stacked_dict = {'input': [], 'target': []}
-    for folder in os.listdir(dir_folders):
-        if train_val_test in folder:
-            # get all available reaches
-            reach_id = folder.split('_r',1)[1]
-            inputs, target = combine_datasets(train_val_test, int(reach_id), year_target, nonwater_threshold, 
-                                              nodata_value, nonwater_value, dir_folders, collection, scaled_classes)
-            stacked_dict['input'].extend(inputs)
-            stacked_dict['target'].extend(target)
-       
-    # create tensors
-    if dtype == None:
-        input_tensor = torch.tensor(stacked_dict['input'], device=device)
-        target_tensor = torch.tensor(stacked_dict['target'], device=device)
-    else:
-        input_tensor = torch.tensor(stacked_dict['input'], dtype=dtype, device=device)
-        target_tensor = torch.tensor(stacked_dict['target'], dtype=dtype, device=device)
-    
-    dataset = TensorDataset(input_tensor, target_tensor)
-    return dataset
-"""
-# ----------------------------------------- # 
-# TEMPORAL SPLIT #
-# ----------------------------------------- # 
 
 def split_list(train_val_test, reach, month, year_end_train=2009, year_end_val=2015, dir_folders=r'data\satellite', collection=r'JRC_GSW1_4_MonthlyHistory'):
     '''
@@ -466,15 +393,11 @@ def split_list(train_val_test, reach, month, year_end_train=2009, year_end_val=2
             test_list.append(path)
     return train_list, val_list, test_list
 
+# XXXXX
+# Helper functions for build_ci_tensors function (information is split up in comparison to extract_year_and_reach):
+# XXXXX
 
-
-
-
-
-
-
-
-
+'''
 def parse_year_from_path(path: str) -> int:
     m = re.search(r"(19|20)\d{2}", str(path))
     if not m:
@@ -484,13 +407,14 @@ def parse_year_from_path(path: str) -> int:
 def reach_to_str(reach_id: int) -> str:
     # adjust if your CSV uses a different reach format
     return f"r{int(reach_id):02d}"
+'''
 
 def normalize_reach_id(reach_id: str, train_val_test: str) -> str:
     """
     Normalize a reach id to the CI CSV format.
     - testing  -> r00
     - validation -> r01
-    - training -> r1..r28 (no zero padding)
+    - training -> r1-r28
     """
     m = re.search(r"\d+", str(reach_id))
     if not m:
@@ -513,12 +437,15 @@ def parse_reach_int(reach_id: str) -> int:
         raise ValueError(f"Could not parse reach id from: {reach_id}")
     return int(m.group())
 
+# XXXXX
+# Builds CI tensors aligned with input/target samples
+# XXXXX
+
 def build_ci_tensors(years, reaches, train_val_test, year_target=5, months=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
                      csv_path=r"preprocessing/Brahmaputra_merged_output.csv", fill_value=np.nan):
     """
     Build CI tensors aligned with the input/target samples created by create_datasets.
 
-    years and reaches should be the lists returned by create_datasets (years = start year per sample).
     Returns:
         ci_inputs: (N, T, M) where T=year_target-1 and M=len(months)
     """
